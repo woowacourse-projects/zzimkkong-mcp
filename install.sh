@@ -40,22 +40,29 @@ echo ""
 
 # ── GitHub Token ──────────────────────────────────────────────────────────────
 if [ -z "${GITHUB_TOKEN:-}" ]; then
-  echo "GitHub Personal Access Token이 필요합니다."
-  echo "브라우저에서 토큰 발급 페이지를 열겠습니다..."
-  echo "  • Expiration: 원하는 기간 선택"
-  echo "  • Scopes: 'read:packages' 체크 후 Generate token 클릭"
-  echo ""
-  TOKEN_URL="https://github.com/settings/tokens/new?description=zzimkkong-mcp&scopes=read:packages"
-  if command -v open &>/dev/null; then
-    open "$TOKEN_URL"
-  elif command -v xdg-open &>/dev/null; then
-    xdg-open "$TOKEN_URL"
+  # ~/.npmrc에 저장된 토큰 확인
+  EXISTING_TOKEN=$(grep "^//${REGISTRY}/:_authToken=" "$NPMRC" 2>/dev/null | cut -d= -f2 || true)
+  if [ -n "${EXISTING_TOKEN:-}" ]; then
+    GITHUB_TOKEN="$EXISTING_TOKEN"
+    echo "✅ 기존 GitHub Token 재사용"
   else
-    echo "👉 직접 접속: $TOKEN_URL"
+    echo "GitHub Personal Access Token이 필요합니다."
+    echo "브라우저에서 토큰 발급 페이지를 열겠습니다..."
+    echo "  • Expiration: 원하는 기간 선택"
+    echo "  • Scopes: 'read:packages' 체크 후 Generate token 클릭"
+    echo ""
+    TOKEN_URL="https://github.com/settings/tokens/new?description=zzimkkong-mcp&scopes=read:packages"
+    if command -v open &>/dev/null; then
+      open "$TOKEN_URL"
+    elif command -v xdg-open &>/dev/null; then
+      xdg-open "$TOKEN_URL"
+    else
+      echo "👉 직접 접속: $TOKEN_URL"
+    fi
+    echo ""
+    read -rsp "발급된 Token을 붙여넣으세요: " GITHUB_TOKEN
+    echo ""
   fi
-  echo ""
-  read -rsp "발급된 Token을 붙여넣으세요: " GITHUB_TOKEN
-  echo ""
 fi
 
 # ── ~/.npmrc 설정 (중복 없이 갱신) ───────────────────────────────────────────
