@@ -1,10 +1,44 @@
 import https from 'https';
 import { URL } from 'url';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import puppeteer from 'puppeteer-core';
 
 const BASE_URL = process.env.ZZIMKKONG_BASE_URL ?? 'https://k8s.zzimkkong.com';
 export const MAP_ID = parseInt(process.env.ZZIMKKONG_MAP_ID ?? '234', 10);
 
 const agent = new https.Agent({ rejectUnauthorized: false });
+
+// ────────────────── Token management ──────────────────
+
+const TOKEN_DIR = path.join(os.homedir(), '.zzimkkong-mcp');
+const TOKEN_FILE = path.join(TOKEN_DIR, 'token');
+
+function loadPersistedToken(): string | null {
+  try {
+    return fs.readFileSync(TOKEN_FILE, 'utf-8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function persistToken(token: string | null): void {
+  try {
+    if (token) {
+      fs.mkdirSync(TOKEN_DIR, { recursive: true });
+      fs.writeFileSync(TOKEN_FILE, token, { mode: 0o600 });
+    } else {
+      fs.rmSync(TOKEN_FILE, { force: true });
+    }
+  } catch { /* ignore */ }
+}
+
+let _token: string | null = process.env.ZZIMKKONG_TOKEN ?? loadPersistedToken();
+
+export function getToken(): string | null { return _token; }
+export function setToken(token: string): void { _token = token; persistToken(token); }
+export function clearToken(): void { _token = null; persistToken(null); }
 
 // ────────────────── Types ──────────────────
 
@@ -12,7 +46,9 @@ export interface Space {
   id: number;
   name: string;
   color: string;
+  area: string;
   reservationEnable: boolean;
+  allowedGroups: string[];
   settings: Setting[];
 }
 
@@ -43,6 +79,24 @@ export interface SpaceReservations {
   spaceId: number;
   spaceName: string;
   reservations: Reservation[];
+}
+
+export interface MemberInfo {
+  id: number;
+  email: string;
+  userName: string;
+  organization: string | null;
+  group: string | null;
+}
+
+export interface MyReservation {
+  id: number;
+  startDateTime: string;
+  endDateTime: string;
+  name: string;
+  description: string;
+  spaceName: string;
+  spaceId: number;
 }
 
 // ────────────────── HTTP client ──────────────────
@@ -106,6 +160,91 @@ async function request<T>(method: string, path: string, body?: unknown, token?: 
     msg = parsed.message ?? msg;
   } catch { /* ignore */ }
   throw new Error(`HTTP ${res.status}: ${msg}`);
+}
+
+// ────────────────── Auth ──────────────────
+
+export async function loginByEmail(email: string, password: string): Promise<void> {
+  const res = await request<{ accessToken: string }>(
+    'POST', '/api/members/login/token', { email, password },
+  );
+  setToken(res.accessToken);
+}
+
+export async function loginByOauth(provider: string, code: string): Promise<void> {
+  const res = await rawRequest('GET', `/api/members/${provider}/login/token?code=${code}`);
+  if (res.status === 404) {
+    const body = JSON.parse(res.body) as { email?: string };
+    throw new Error(`가입되지 않은 계정입니다. 먼저 찜꽁 회원가입을 진행해주세요. (email: ${body.email ?? ''})`);
+  }
+  if (res.status < 200 || res.status >= 300) {
+    let msg = res.body;
+    try { msg = (JSON.parse(res.body) as { message?: string }).message ?? msg; } catch { /* ignore */ }
+    throw new Error(`HTTP ${res.status}: ${msg}`);
+  }
+  const data = JSON.parse(res.body) as { accessToken: string };
+  setToken(data.accessToken);
+}
+
+export async function getMember(): Promise<MemberInfo> {
+  const token = _token;
+  if (!token) throw new Error('로그인이 필요합니다.');
+  return request<MemberInfo>('GET', '/api/members/me', undefined, token);
+}
+
+const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const OAUTH_REDIRECT_BASE = 'https://zzimkkong.com/login/oauth';
+
+function buildOAuthUrl(provider: string): string {
+  const redirectUri = `${OAUTH_REDIRECT_BASE}/${provider}`;
+  if (provider === 'github') {
+    return (
+      'https://github.com/login/oauth/authorize' +
+      '?client_id=378d2c8cdd571f1f8aca' +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}`
+    );
+  }
+  if (provider === 'google') {
+    return (
+      'https://accounts.google.com/o/oauth2/v2/auth' +
+      '?scope=https://www.googleapis.com/auth/userinfo.email' +
+      '&access_type=offline' +
+      '&include_granted_scopes=true' +
+      '&response_type=code' +
+      '&state=state_parameter_passthrough_value' +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      '&client_id=350852545256-9r8sj68t72bc880ug8e594j9dolimu88.apps.googleusercontent.com'
+    );
+  }
+  throw new Error(`지원하지 않는 OAuth 제공자: ${provider}`);
+}
+
+export async function loginWithBrowser(provider: string): Promise<void> {
+  const oauthUrl = buildOAuthUrl(provider);
+  const redirectPrefix = `${OAUTH_REDIRECT_BASE}/${provider}`;
+
+  const browser = await puppeteer.launch({
+    executablePath: CHROME_PATH,
+    headless: false,
+    args: ['--no-sandbox'],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.goto(oauthUrl);
+
+    const redirectedUrl = await page.waitForRequest(
+      (req) => req.url().startsWith(redirectPrefix),
+      { timeout: 120_000 },
+    );
+
+    const code = new URL(redirectedUrl.url()).searchParams.get('code');
+    if (!code) throw new Error('OAuth 코드를 받지 못했습니다.');
+
+    await loginByOauth(provider, code);
+  } finally {
+    await browser.close();
+  }
 }
 
 // ────────────────── Space cache ──────────────────
@@ -198,6 +337,29 @@ export async function createReservation(
   throw new Error(`HTTP ${res.status}: ${msg}`);
 }
 
+export async function createMemberReservation(
+  spaceId: number,
+  startDateTime: string,
+  endDateTime: string,
+  description: string,
+): Promise<number> {
+  const token = _token;
+  if (!token) throw new Error('로그인이 필요합니다.');
+  const res = await rawRequest(
+    'POST',
+    `/api/guests/maps/${MAP_ID}/spaces/${spaceId}/reservations`,
+    { startDateTime, endDateTime, description },
+    token,
+  );
+  if (res.status === 201) {
+    const location = (res.headers['location'] as string | undefined) ?? '';
+    return parseInt(location.split('/').pop() ?? '0', 10);
+  }
+  let msg = res.body;
+  try { msg = (JSON.parse(res.body) as { message?: string }).message ?? msg; } catch { /* ignore */ }
+  throw new Error(`HTTP ${res.status}: ${msg}`);
+}
+
 export async function getReservation(
   spaceId: number,
   reservationId: number,
@@ -226,6 +388,23 @@ export async function updateReservation(
   );
 }
 
+export async function updateMemberReservation(
+  spaceId: number,
+  reservationId: number,
+  startDateTime: string,
+  endDateTime: string,
+  description: string,
+): Promise<void> {
+  const token = _token;
+  if (!token) throw new Error('로그인이 필요합니다.');
+  await request<void>(
+    'PUT',
+    `/api/guests/maps/${MAP_ID}/spaces/${spaceId}/reservations/${reservationId}`,
+    { startDateTime, endDateTime, description },
+    token,
+  );
+}
+
 export async function deleteReservation(
   spaceId: number,
   reservationId: number,
@@ -236,6 +415,32 @@ export async function deleteReservation(
     `/api/guests/maps/${MAP_ID}/spaces/${spaceId}/reservations/${reservationId}`,
     { password },
   );
+}
+
+export async function deleteMemberReservation(
+  spaceId: number,
+  reservationId: number,
+): Promise<void> {
+  const token = _token;
+  if (!token) throw new Error('로그인이 필요합니다.');
+  const res = await rawRequest(
+    'DELETE',
+    `/api/guests/maps/${MAP_ID}/spaces/${spaceId}/reservations/${reservationId}`,
+    { password: null },
+    token,
+  );
+  if (res.status < 200 || res.status >= 300) {
+    let msg = res.body;
+    try { msg = (JSON.parse(res.body) as { message?: string }).message ?? msg; } catch { /* ignore */ }
+    throw new Error(`HTTP ${res.status}: ${msg}`);
+  }
+}
+
+export async function getMyReservations(): Promise<MyReservation[]> {
+  const token = _token;
+  if (!token) throw new Error('로그인이 필요합니다.');
+  const res = await request<{ data: MyReservation[] }>('GET', '/api/guests/reservations', undefined, token);
+  return res.data ?? [];
 }
 
 export async function findMyReservations(
