@@ -4,7 +4,6 @@ set -euo pipefail
 ORG="woowacourse-projects"
 PACKAGE="@${ORG}/zzimkkong-mcp"
 NPMRC="${HOME}/.npmrc"
-SETTINGS="${HOME}/.claude/settings.json"
 REGISTRY="npm.pkg.github.com"
 
 echo "🔧 zzimkkong-mcp 설치를 시작합니다..."
@@ -30,26 +29,11 @@ mv "${NPMRC}.tmp" "$NPMRC"
 chmod 600 "$NPMRC"
 echo "✅ npm 인증 설정 완료"
 
-# ── 패키지 설치 ────────────────────────────────────────────────────────────────
-echo "📦 ${PACKAGE} 설치 중..."
-npm install -g "$PACKAGE"
-echo "✅ 패키지 설치 완료"
-
-# ── Claude Code settings.json 업데이트 ────────────────────────────────────────
-mkdir -p "$(dirname "$SETTINGS")"
-
-node -e "
-  const fs = require('fs');
-  const p = '$SETTINGS';
-  let s = {};
-  if (fs.existsSync(p)) {
-    try { s = JSON.parse(fs.readFileSync(p, 'utf8')); } catch(e) {}
-  }
-  s.mcpServers = s.mcpServers || {};
-  s.mcpServers.zzimkkong = { command: 'zzimkkong-mcp' };
-  fs.writeFileSync(p, JSON.stringify(s, null, 2) + '\n');
-"
-echo "✅ Claude Code 설정 완료"
+# ── Claude Code MCP 등록 ───────────────────────────────────────────────────────
+echo "🔌 Claude Code에 MCP 등록 중..."
+claude mcp remove zzimkkong 2>/dev/null || true
+claude mcp add zzimkkong -s user -- npx "$PACKAGE"
+echo "✅ Claude Code MCP 등록 완료"
 
 echo ""
 echo "🎉 설치 완료! Claude Code를 재시작하면 zzimkkong MCP가 활성화됩니다."
