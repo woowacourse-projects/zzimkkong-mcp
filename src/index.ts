@@ -122,7 +122,12 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'get_my_info',
-    description: '현재 로그인된 찜꽁 계정 정보와 역할(COACH 여부)을 조회합니다.',
+    description: '현재 로그인된 찜꽁 계정 정보와 역할(COACH 여부)을 조회합니다. 세션 만료 여부도 확인할 수 있습니다.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_last_login_method',
+    description: '마지막으로 사용한 찜꽁 로그인 방법을 반환합니다. email / github / google 중 하나이거나 none입니다. 세션 만료 시 로그인 방법 안내에 사용합니다.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -251,6 +256,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const provider = name === 'login_google' ? 'google' : 'github';
         await api.loginWithBrowser(provider);
         const member = await api.getMember();
+        api.persistLastEmail(member.email);
         const role = (member.group ?? member.organization)?.toUpperCase() || '없음';
         return ok(
           `✅ ${provider === 'google' ? 'Google' : 'GitHub'} 로그인 성공!\n` +
@@ -279,6 +285,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const { provider, code } = args as { provider: string; code: string };
         await api.loginByOauth(provider, code);
         const member = await api.getMember();
+        api.persistLastEmail(member.email);
         const role = (member.group ?? member.organization)?.toUpperCase() || '없음';
         return ok(
           `✅ ${provider} 로그인 성공!\n` +
@@ -297,14 +304,27 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       // ── get_my_info ──────────────────────────────
       case 'get_my_info': {
         if (!api.getToken()) return ok('로그인되어 있지 않습니다.');
-        const member = await api.getMember();
-        const role = (member.group ?? member.organization)?.toUpperCase() || '없음';
-        return ok(
-          `계정 정보\n${'─'.repeat(40)}\n` +
-          `  이름: ${member.userName}\n` +
-          `  이메일: ${member.email}\n` +
-          `  역할: ${role}`,
-        );
+        try {
+          const member = await api.getMember();
+          const role = (member.group ?? member.organization)?.toUpperCase() || '없음';
+          return ok(
+            `계정 정보\n${'─'.repeat(40)}\n` +
+            `  이름: ${member.userName}\n` +
+            `  이메일: ${member.email}\n` +
+            `  역할: ${role}`,
+          );
+        } catch (e) {
+          if ((e as Error).message.includes('401')) {
+            api.clearToken();
+            return ok('세션이 만료되었습니다. 다시 로그인이 필요합니다.');
+          }
+          throw e;
+        }
+      }
+
+      // ── get_last_login_method ─────────────────────
+      case 'get_last_login_method': {
+        return ok(api.getLastLoginMethod() ?? 'none');
       }
 
       // ── list_spaces ──────────────────────────────

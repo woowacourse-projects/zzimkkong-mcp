@@ -1,6 +1,6 @@
 {
   "name": "@woowacourse-projects/zzimkkong-mcp",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "MCP server for Zzimkkong meeting room reservation (판교 캠퍼스)",
   "type": "module",
   "main": "dist/index.js",

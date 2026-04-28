@@ -3,7 +3,21 @@
 ## 흐름
 
 1. **로그인 확인**: `get_my_info` 툴로 로그인 상태를 확인합니다.
-   - 미로그인 시 안내하고 종료합니다.
+   - 로그인됨 → 다음 단계로 진행
+   - "세션이 만료되었습니다" 또는 "로그인되어 있지 않습니다" 응답 시:
+     1. `get_last_login_method` 툴을 호출해 마지막 로그인 방법(email/github/google/none)을 확인합니다.
+     2. `AskUserQuestion` 툴로 선택지를 제시합니다:
+        - question: "로그인이 필요합니다. 로그인 방법을 선택해주세요"
+        - header: "로그인 방법"
+        - options 3개: 마지막 로그인 방법에 해당하는 항목의 description 끝에 " (최근선택)"을 추가합니다.
+          - label: "이메일/비밀번호", description: "이메일과 비밀번호로 로그인합니다."
+          - label: "GitHub", description: "GitHub 계정으로 브라우저 로그인합니다."
+          - label: "Google", description: "Google 계정으로 브라우저 로그인합니다."
+     3. 선택에 따라 로그인 툴 실행:
+        - 이메일/비밀번호 선택 → 이메일/비밀번호 입력받아 `login` 툴 실행
+        - GitHub 선택 → `login_github` 툴 실행
+        - Google 선택 → `login_google` 툴 실행
+     4. 로그인 성공 후 다음 단계로 진행합니다.
 
 2. **예약 목록 조회**: `get_my_reservations` 툴로 내 예약 목록을 보여줍니다.
 

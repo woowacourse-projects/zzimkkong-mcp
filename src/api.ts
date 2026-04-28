@@ -14,6 +14,8 @@ const agent = new https.Agent({ rejectUnauthorized: false });
 
 const TOKEN_DIR = path.join(os.homedir(), '.zzimkkong-mcp');
 const TOKEN_FILE = path.join(TOKEN_DIR, 'token');
+const LAST_LOGIN_FILE = path.join(TOKEN_DIR, 'last-login-method');
+const LAST_EMAIL_FILE = path.join(TOKEN_DIR, 'last-email');
 
 function loadPersistedToken(): string | null {
   try {
@@ -32,6 +34,36 @@ function persistToken(token: string | null): void {
       fs.rmSync(TOKEN_FILE, { force: true });
     }
   } catch { /* ignore */ }
+}
+
+function persistLastLoginMethod(method: string): void {
+  try {
+    fs.mkdirSync(TOKEN_DIR, { recursive: true });
+    fs.writeFileSync(LAST_LOGIN_FILE, method, { mode: 0o600 });
+  } catch { /* ignore */ }
+}
+
+export function getLastLoginMethod(): string | null {
+  try {
+    return fs.readFileSync(LAST_LOGIN_FILE, 'utf-8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function persistLastEmail(email: string): void {
+  try {
+    fs.mkdirSync(TOKEN_DIR, { recursive: true });
+    fs.writeFileSync(LAST_EMAIL_FILE, email, { mode: 0o600 });
+  } catch { /* ignore */ }
+}
+
+export function getLastEmail(): string | null {
+  try {
+    return fs.readFileSync(LAST_EMAIL_FILE, 'utf-8').trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 let _token: string | null = process.env.ZZIMKKONG_TOKEN ?? loadPersistedToken();
@@ -169,6 +201,8 @@ export async function loginByEmail(email: string, password: string): Promise<voi
     'POST', '/api/members/login/token', { email, password },
   );
   setToken(res.accessToken);
+  persistLastLoginMethod('email');
+  persistLastEmail(email);
 }
 
 export async function loginByOauth(provider: string, code: string): Promise<void> {
@@ -184,6 +218,7 @@ export async function loginByOauth(provider: string, code: string): Promise<void
   }
   const data = JSON.parse(res.body) as { accessToken: string };
   setToken(data.accessToken);
+  persistLastLoginMethod(provider);
 }
 
 export async function getMember(): Promise<MemberInfo> {
@@ -232,6 +267,15 @@ export async function loginWithBrowser(provider: string): Promise<void> {
   try {
     const page = await browser.newPage();
     await page.goto(oauthUrl);
+
+    const lastEmail = getLastEmail();
+    if (lastEmail) {
+      const selector = provider === 'google' ? '#identifierId' : '#login_field';
+      try {
+        await page.waitForSelector(selector, { timeout: 4000 });
+        await page.type(selector, lastEmail);
+      } catch { /* 필드를 찾지 못하면 수동 입력 */ }
+    }
 
     const redirectedUrl = await page.waitForRequest(
       (req) => req.url().startsWith(redirectPrefix),
@@ -439,8 +483,17 @@ export async function deleteMemberReservation(
 export async function getMyReservations(): Promise<MyReservation[]> {
   const token = _token;
   if (!token) throw new Error('로그인이 필요합니다.');
-  const res = await request<{ data: MyReservation[] }>('GET', '/api/guests/reservations', undefined, token);
-  return res.data ?? [];
+  const all: MyReservation[] = [];
+  let page = 0;
+  while (true) {
+    const res = await request<{ data: MyReservation[]; hasNext: boolean }>(
+      'GET', `/api/guests/reservations?page=${page}`, undefined, token,
+    );
+    all.push(...(res.data ?? []));
+    if (!res.hasNext) break;
+    page++;
+  }
+  return all;
 }
 
 export async function findMyReservations(
